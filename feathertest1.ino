@@ -90,6 +90,8 @@ void error(const __FlashStringHelper*err) {
 
 unsigned long lastStart = 10000;
 unsigned long lastConnectCheck = 0;
+char queue[] = {0,0,0,0,0,0};
+unsigned long nextQueueInsert = millis();
 
 /**************************************************************************/
 /*!
@@ -109,7 +111,7 @@ void setup(void)
   /* Initialise the module */
   Serial.print(F("Initialising the Bluefruit LE module: "));
 
-  if ( !ble.begin(VERBOSE_MODE) )
+  if ( !ble.begin(true) )
   {
     error(F("Couldn't find Bluefruit, make sure it's in CoMmanD mode & check wiring?"));
   }
@@ -170,15 +172,22 @@ void setup(void)
 
   Serial.println();
 
-lastStart = millis() + 5000;
-
+  lastStart = millis() + 5000;
+  memset(queue,0, 7);
+  nextQueueInsert = millis() + 1000;
 }
 
 
 //char *str = "Hello there.  This is a test.  I wonder long this will take to divide and conquer the small bits of robots.  Wow, this is kind of a long piece of text.  I hope this thing can keep up.";
-char *str = "abcdefghijklmnopqrstuvwxyz";
+//char *str = "abcdefghijklmnopqrstuvwxyz";
+char *str = "Hello there.  This is a test.";
 char* c = str;
 bool isConnected = false;
+int count = 0;
+int queueIndex = 0;
+unsigned long lastQueueInsert = 0;
+bool dirty = false;
+bool keyDown = false;
 
 /**************************************************************************/
 /*!
@@ -198,62 +207,92 @@ void loop(void) {
         }
     }
     if (isConnected) {
-        if ((now - lastStart) > 500) {
-            lastStart = now;
-            Serial.println(c[0]);
-            if (c[0] == ' ') {
-                ble.println("AT+BLEKEYBOARDCODE=00-00-2C-00-00");
-            } else if (c[0]  == '.') {
-                ble.println("AT+BLEKEYBOARDCODE=00-00-37-00-00");
-            } else if (isupper(c[0])) {
-                ble.print("AT+BLEKEYBOARDCODE=02-00-");
-                int hidCode = (int)c[0] - 61;
-                if (hidCode < 16) {
-                    ble.print("0");
-                }
-                ble.print(hidCode, HEX);
-                ble.println("-00-00");
-            } else {
-                ble.print("AT+BLEKEYBOARDCODE=00-00-");
-                int hidCode = (int)c[0] - 93;
-                if (hidCode < 16) {
-                    ble.print("0");
-                }
-                ble.print(hidCode, HEX);
-                ble.println("-00-00");
-            }
-            ble.println("AT+BLEKEYBOARDCODE=00-00");
-            //ble.print("AT+BleKeyboard=");
-            //ble.println(c[0]);
+        /*
+        Serial.print ("nextQueueInsert: ");
+        Serial.print(nextQueueInsert);
+        Serial.print(", now: ");
+        Serial.print(now, DEC);
+        Serial.print(", nextQueueInsert - now: ");
+        Serial.println (nextQueueInsert - now);
+        */
+        if ((now - lastQueueInsert) > nextQueueInsert) {
+            //Serial.print (nextQueueInsert);
+            //Serial.println (" inserting");
+            queue[queueIndex] = c[0];
+            queueIndex++;
             *c++;
             if (*c == 0) {
                 c = str;
-                ble.println("AT+BLEKEYBOARDCODE=00-00-28-00-00");
-                ble.println("AT+BLEKEYBOARDCODE=00-00");
+                queue[queueIndex] = '\n';
+                queueIndex++;
+            }
+            lastQueueInsert = now;
+            nextQueueInsert = random(80,200);
+            dirty = true;
+        }
 
-                Serial.println ("done");
+        if ((keyDown) && ((now - lastStart) > 10)) {
+            Serial.print(now);
+            Serial.print(" / ");
+            Serial.print (now - lastStart);
+            Serial.println (": Sending keyUp");
+            ble.println("AT+BLEKEYBOARDCODE=00-00");
+            keyDown = false;
+            lastStart = now;
+        }
+
+/*
+        Serial.println("Checking available");
+        bool avail = ble.available();
+        Serial.print("Available is: ");
+        Serial.print(avail);
+        */
+
+        if ((!keyDown) && ((queueIndex >= 1) || ((now - lastStart) > 5000))) {
+            Serial.print(now);
+            Serial.print(" / ");
+            Serial.print (now - lastStart);
+            lastStart = now;
+            if (!dirty) {
+                Serial.println(": timeout reached, but not dirty.  Skipping");
+            } else {
+                Serial.print (": sending ");
+                Serial.print (queueIndex);
+                Serial.print (" characters: '");
+                for (int i = 0; i < queueIndex; i++ ) {
+                    Serial.print(queue[i]);
+                }
+                Serial.println("'");
+                ble.print("AT+BLEKEYBOARDCODE=00-00-");
+                for (int i = 0; i < queueIndex; i++ ) {
+                    if (queue[i] == ' ') {
+                        ble.print("2C-");
+                    } else if (queue[i]  == '.') {
+                        ble.print("37-");
+                    } else if (queue[i]  == '\n') {
+                            ble.print("28-");
+                    } else if (isupper(queue[i])) {
+                        //ble.print("AT+BLEKEYBOARDCODE=02-00-");
+                        int hidCode = (int)queue[i] - 61;
+                        if (hidCode < 16) {
+                            ble.print("0");
+                        }
+                        ble.print(hidCode, HEX);
+                        ble.print("-");
+                    } else {
+                        int hidCode = (int)queue[i] - 93;
+                        if (hidCode < 16) {
+                            ble.print("0");
+                        }
+                        ble.print(hidCode, HEX);
+                        ble.print("-");
+                    }
+                }
+                ble.println("00-00");
+                queueIndex = 0;
+                dirty = false;
+                keyDown = true;
             }
         }
     }
-}
-
-/**************************************************************************/
-/*!
-    @brief  Checks for user input (via the Serial Monitor)
-*/
-/**************************************************************************/
-void getUserInput(char buffer[], uint8_t maxSize)
-{
-  memset(buffer, 0, maxSize);
-  while( Serial.available() == 0 ) {
-    delay(1);
-  }
-
-  uint8_t count=0;
-
-  do
-  {
-    count += Serial.readBytes(buffer+count, maxSize);
-    delay(2);
-  } while( (count < maxSize) && !(Serial.available() == 0) );
 }
