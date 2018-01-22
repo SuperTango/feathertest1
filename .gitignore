@@ -1,0 +1,25 @@
+*.swp
+*.swo
+checkinFile.txt
+# ignore some VisualMicro files (http://stackoverflow.com/questions/3922660/which-visual-c-file-types-should-be-committed-to-version-control)
+*.aps
+*.exe
+*.idp
+*.ipch
+*.lastbuildstate
+*.lib
+*.log
+*.manifest
+*.obj
+*.pch
+*.pdb
+*.res
+*.sdf
+*.suo
+*.tlog
+*.user
+# other debug stuff not to checkin?
+Debug
+.idea
+build
+nogit
