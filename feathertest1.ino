@@ -90,7 +90,10 @@ void error(const __FlashStringHelper*err) {
 
 unsigned long lastStart = 10000;
 unsigned long lastConnectCheck = 0;
-char queue[] = {0,0,0,0,0,0};
+int maxQueueSize = 50;
+char queue[50] = {0};
+int insertIndex = 0;
+int removeIndex = 0;
 unsigned long nextQueueInsert = millis();
 
 /**************************************************************************/
@@ -173,7 +176,7 @@ void setup(void)
   Serial.println();
 
   lastStart = millis() + 5000;
-  memset(queue,0, 7);
+  memset(queue,0, maxQueueSize);
   nextQueueInsert = millis() + 1000;
 }
 
@@ -184,10 +187,12 @@ char *str = "Hello there.  This is a test.";
 char* c = str;
 bool isConnected = false;
 int count = 0;
-int queueIndex = 0;
 unsigned long lastQueueInsert = 0;
-bool dirty = false;
+unsigned long lastBleAvailableCheck = 0;
 bool keyDown = false;
+bool sendBluetooth = true;
+bool bleAvailable = true;
+unsigned long lastReset = 0;
 
 /**************************************************************************/
 /*!
@@ -215,30 +220,64 @@ void loop(void) {
         Serial.print(", nextQueueInsert - now: ");
         Serial.println (nextQueueInsert - now);
         */
+        
+        // put a character into the queue. the random() line at the bottom
+        // of this section specifies how long until the next character is
+        // put into the queue.
         if ((now - lastQueueInsert) > nextQueueInsert) {
             //Serial.print (nextQueueInsert);
             //Serial.println (" inserting");
-            queue[queueIndex] = c[0];
-            queueIndex++;
+            queue[insertIndex] = c[0];
+            insertIndex++;
+            if (insertIndex >= maxQueueSize) {
+                insertIndex = 0;
+            }
             *c++;
             if (*c == 0) {
                 c = str;
-                queue[queueIndex] = '\n';
-                queueIndex++;
+                queue[insertIndex] = '\n';
+                insertIndex++;
+                if (insertIndex >= maxQueueSize) {
+                    insertIndex = 0;
+                }
             }
             lastQueueInsert = now;
-            nextQueueInsert = random(80,200);
-            dirty = true;
+            nextQueueInsert = random(30,250);
         }
 
+        // wait 10ms after sending the "key down" sequence to send a "key up". 
         if ((keyDown) && ((now - lastStart) > 10)) {
             Serial.print(now);
             Serial.print(" / ");
             Serial.print (now - lastStart);
             Serial.println (": Sending keyUp");
-            ble.println("AT+BLEKEYBOARDCODE=00-00");
-            keyDown = false;
+            if (sendBluetooth) {
+                ble.println("AT+BLEKEYBOARDCODE=00-00");
+            }
             lastStart = now;
+            keyDown = false;
+        }
+
+        // Try to see if BLE is available.
+        if ((now - lastBleAvailableCheck) > 100) {
+            Serial.print(now);
+            Serial.print(": Checking BLE Availability");
+
+            // Weird. set bleAvailable to true if time < 10s because ble.available always returns false if you haven't sent anything through it first.
+            if (ble.available() || (now < 10000)) {
+                bleAvailable = true;
+                Serial.print(". BLE Available");
+            } else {
+                bleAvailable = false;
+                Serial.print(". BLE UNAvailable");
+                if ((now - lastReset) > 5000) {
+                    ble.info();
+                    lastReset = now;
+                    bleAvailable = true;
+                }
+            }
+            Serial.println();
+            lastBleAvailableCheck = now;
         }
 
 /*
@@ -248,51 +287,79 @@ void loop(void) {
         Serial.print(avail);
         */
 
-        if ((!keyDown) && ((queueIndex >= 1) || ((now - lastStart) > 5000))) {
+        // if there's a character in the queue, and if it's time, and there's not a key currently down, and ble is
+        // available, pop a character off the queue and send it via
+        // bluetooth.
+        if ((!keyDown) && (bleAvailable) && (removeIndex != insertIndex) && ((now - lastStart) > 150)) {
+            Serial.print("removeIndex: ");
+            Serial.print(removeIndex);
+            Serial.print(", insertIndex: ");
+            Serial.print(insertIndex);
+            Serial.print(", now: ");
             Serial.print(now);
+            Serial.print(", lastStart: ");
+            Serial.print(lastStart);
             Serial.print(" / ");
             Serial.print (now - lastStart);
             lastStart = now;
-            if (!dirty) {
+            if (removeIndex == insertIndex) {
                 Serial.println(": timeout reached, but not dirty.  Skipping");
             } else {
+                //uint8_t modifier = (queue[removeIndex] >> 8) & 0xFF;
+                //uint8_t charCode = queue[removeIndex] & 0xFF;
+                char charToSend = queue[removeIndex];
+                uint8_t modifier = 0;
+                uint8_t keyCode = 0;
+                if (isupper(charToSend)) {
+                    modifier |= 0x02;
+                }
+
                 Serial.print (": sending ");
-                Serial.print (queueIndex);
+                Serial.print (removeIndex);
                 Serial.print (" characters: '");
-                for (int i = 0; i < queueIndex; i++ ) {
-                    Serial.print(queue[i]);
+                Serial.print(queue[removeIndex]);
+                Serial.print("', modifier: 0x");
+                Serial.print(modifier, HEX);
+                Serial.print(", hid code: " );
+                Serial.print(keyCode, HEX);
+                Serial.println();
+
+                removeIndex++;
+                if (removeIndex >= maxQueueSize) {
+                    removeIndex = 0;
                 }
-                Serial.println("'");
-                ble.print("AT+BLEKEYBOARDCODE=00-00-");
-                for (int i = 0; i < queueIndex; i++ ) {
-                    if (queue[i] == ' ') {
-                        ble.print("2C-");
-                    } else if (queue[i]  == '.') {
-                        ble.print("37-");
-                    } else if (queue[i]  == '\n') {
-                            ble.print("28-");
-                    } else if (isupper(queue[i])) {
-                        //ble.print("AT+BLEKEYBOARDCODE=02-00-");
-                        int hidCode = (int)queue[i] - 61;
-                        if (hidCode < 16) {
-                            ble.print("0");
-                        }
-                        ble.print(hidCode, HEX);
-                        ble.print("-");
-                    } else {
-                        int hidCode = (int)queue[i] - 93;
-                        if (hidCode < 16) {
-                            ble.print("0");
-                        }
-                        ble.print(hidCode, HEX);
-                        ble.print("-");
+
+                if (sendBluetooth) {
+                    ble.print("AT+BLEKEYBOARDCODE=");
+                    if (modifier < 16) {
+                        ble.print("0");
                     }
+                    ble.print(modifier);
+                    ble.print("-00-");
+                    if (charToSend == ' ') {
+                        ble.print("2C");
+                    } else if (charToSend  == '.') {
+                        ble.print("37");
+                    } else if (charToSend  == '\n') {
+                        ble.print("28");
+                    } else if (isupper(charToSend)) {
+                        int hidCode = (int)charToSend - 61;
+                        if (hidCode < 16) {
+                            ble.print("0");
+                        }
+                        ble.print(hidCode, HEX);
+                    } else {
+                        int hidCode = (int)charToSend - 93;
+                        if (hidCode < 16) {
+                            ble.print("0");
+                        }
+                        ble.print(hidCode, HEX);
+                    }
+                    ble.println("");
                 }
-                ble.println("00-00");
-                queueIndex = 0;
-                dirty = false;
                 keyDown = true;
             }
+            //ble.println("00-00");
         }
     }
 }
